@@ -1,0 +1,157 @@
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+# ==========================================
+# PART 1: LOAD IMAGE & INTERACTIVE SELECTION
+# ==========================================
+
+# REPLACE 'input.jpg' WITH YOUR IMAGE NAME
+image_path = 'C:\Pictures\Screenshots\Screenshot (38).png' 
+img = cv2.imread(image_path)
+
+# Check if image loaded successfully
+if img is None:
+    print(f"Error: Could not load image from '{image_path}'. Check file name/path.")
+    exit()
+
+rows, cols, ch = img.shape
+print("Image Loaded. Dimensions:", rows, "x", cols)
+
+# -- Mouse Callback Variables --
+picked_hsv = None
+
+def pick_color(event, x, y, flags, param):
+    global picked_hsv
+    if event == cv2.EVENT_LBUTTONDOWN:
+        # Convert the clicked pixel to HSV
+        pixel = img[y, x]
+        # Reshape to 1x1 pixel for color conversion
+        pixel_array = np.uint8([[pixel]])
+        hsv_pixel = cv2.cvtColor(pixel_array, cv2.COLOR_BGR2HSV)[0][0]
+        picked_hsv = hsv_pixel
+        print(f"Color picked at ({x}, {y}): HSV={picked_hsv}")
+
+# Show image and wait for click
+print(">>> INSTRUCTIONS: Click on the object you want to segment in the popup window. Then press any key.")
+cv2.namedWindow('CLICK_YOUR_OBJECT')
+cv2.setMouseCallback('CLICK_YOUR_OBJECT', pick_color)
+
+while True:
+    cv2.imshow('CLICK_YOUR_OBJECT', img)
+    key = cv2.waitKey(20)
+    # Break loop if a key is pressed AND a color has been picked
+    if key != -1 and picked_hsv is not None:
+        break
+
+cv2.destroyAllWindows()
+
+# ==========================================
+# PART 2: SEGMENTATION (Isolate the Object)
+# ==========================================
+
+# 1. Create Bounds based on picked color (with sensitivity/tolerance)
+sensitivity = 20
+# Hue is unique (wraps around 180), Saturation/Value usually need min/max clamps
+lower_bound = np.array([max(0, picked_hsv[0] - sensitivity), 50, 50])
+upper_bound = np.array([min(179, picked_hsv[0] + sensitivity), 255, 255])
+
+# 2. Convert entire image to HSV
+hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+
+# 3. Create Mask
+mask = cv2.inRange(hsv_img, lower_bound, upper_bound)
+
+# 4. Optional: Clean noise (Morphological Opening)
+kernel = np.ones((5,5), np.uint8)
+mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+
+# 5. Extract Object (Black background)
+segmented_obj = cv2.bitwise_and(img, img, mask=mask)
+
+# ==========================================
+# PART 3: GEOMETRIC TRANSFORMATIONS
+# ==========================================
+
+# --- A. TRANSLATION (Shift) ---
+# Shift x=50, y=50
+tx, ty = 50, 50
+M_trans = np.float32([[1, 0, tx], [0, 1, ty]])
+# Apply to SEGMENTED object
+res_trans = cv2.warpAffine(segmented_obj, M_trans, (cols, rows))
+
+# --- B. ROTATION ---
+# Rotate 30 degrees around center
+center = (cols // 2, rows // 2)
+angle = 30
+scale = 1.0
+M_rot = cv2.getRotationMatrix2D(center, angle, scale)
+res_rot = cv2.warpAffine(segmented_obj, M_rot, (cols, rows))
+
+# --- C. SCALING (Resizing via Affine) ---
+# Scale 0.7x (smaller)
+s_x, s_y = 0.7, 0.7
+M_scale = np.float32([[s_x, 0, 0], [0, s_y, 0]])
+res_scale = cv2.warpAffine(segmented_obj, M_scale, (cols, rows))
+
+# --- D. SHEARING ---
+# Shear along X-axis
+shear_x = 0.5
+M_shear = np.float32([[1, shear_x, 0], [0, 1, 0]])
+res_shear = cv2.warpAffine(segmented_obj, M_shear, (int(cols*1.5), rows))
+
+# --- E. RIGID TRANSFORMATION (Euclidean) ---
+# Preserves Distance & Angles (Only Rotation + Translation allowed)
+theta = np.radians(20) # 20 degrees
+tx_r, ty_r = 80, -40
+c, s = np.cos(theta), np.sin(theta)
+M_rigid = np.float32([
+    [c, -s, tx_r],
+    [s,  c, ty_r]
+])
+res_rigid = cv2.warpAffine(segmented_obj, M_rigid, (cols, rows))
+
+# --- F. SIMILARITY TRANSFORMATION ---
+# Preserves Shape (Rotation + Translation + Uniform Scale)
+scale_sim = 0.6
+M_similarity = np.float32([
+    [scale_sim * c, -scale_sim * s, tx_r],
+    [scale_sim * s,  scale_sim * c, ty_r]
+])
+res_simil = cv2.warpAffine(segmented_obj, M_similarity, (cols, rows))
+
+
+# ==========================================
+# PART 4: DISPLAY RESULTS
+# ==========================================
+
+# List of images and titles for looping
+results = [
+    (img, 'Original Image'),
+    (mask, 'Segmentation Mask'),
+    (segmented_obj, 'Segmented Object'),
+    (res_trans, 'Translation (Shift)'),
+    (res_rot, 'Rotation (30 deg)'),
+    (res_scale, 'Scaling (0.7x)'),
+    (res_shear, 'Shearing (X-axis)'),
+    (res_rigid, 'Rigid (Rot+Trans)'),
+    (res_simil, 'Similarity (Rot+Trans+Scale)')
+]
+
+plt.figure(figsize=(15, 12))
+
+for i, (image, title) in enumerate(results):
+    plt.subplot(3, 3, i + 1)
+    
+    # Check if image is grayscale (the mask) or color
+    if len(image.shape) == 2:
+        plt.imshow(image, cmap='gray')
+    else:
+        # Convert BGR (OpenCV standard) to RGB (Matplotlib standard)
+        plt.imshow(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        
+    plt.title(title)
+    plt.axis('off')
+
+plt.tight_layout()
+plt.show()
